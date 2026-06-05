@@ -1,0 +1,185 @@
+# =========================
+# SECRETS & CREDENTIALS
+# =========================
+.env
+.env.*
+!.env.example
+apps/bot/.env
+apps/bot_api/.env
+apps/worker/.env
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+*_rsa
+*_rsa.pub
+*_ed25519
+*_ed25519.pub
+secrets/
+credentials/
+service-account*.json
+*secret*.json
+*token*.json
+
+# =========================
+# PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.installed.cfg
+pip-log.txt
+pip-delete-this-directory.txt
+.venv/
+venv/
+env/
+ENV/
+.virtualenv/
+.pyenv/
+.tox/
+.nox/
+*.so
+*.dylib
+
+# =========================
+# ML / AI — тяжёлые файлы
+# =========================
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.pkl
+*.pickle
+*.h5
+*.hdf5
+*.npy
+*.npz
+models/
+weights/
+checkpoints/
+embeddings/
+
+# =========================
+# DATABASES & DUMPS
+# =========================
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+infra/backups/
+backups/
+dumps/
+
+# =========================
+# DOCKER DATA
+# =========================
+volumes/
+data/
+postgres_data/
+redis_data/
+qdrant_storage/
+
+# =========================
+# LOGS & MONITORING
+# =========================
+*.log
+*.log.*
+logs/
+log/
+*.out
+*.err
+celerybeat-schedule
+celerybeat.pid
+
+# =========================
+# NODE / FRONTEND (на случай если добавится)
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn/cache
+.pnp.*
+dist/
+.next/
+.nuxt/
+.output/
+
+# =========================
+# COVERAGE & TESTS
+# =========================
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+junit*.xml
+test-results/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+nbproject/
+
+# =========================
+# OS
+# =========================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =========================
+# ARCHIVES & BINARIES
+# =========================
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.gz
+*.bz2
+*.xz
+
+# =========================
+# ВРЕМЕННЫЕ ФАЙЛЫ
+# =========================
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+.cache/
+tmp/
+temp/

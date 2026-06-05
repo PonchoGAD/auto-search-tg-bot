@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: auto-search-bot-postgres
+    restart: unless-stopped
+    env_file:
+      - ../apps/bot_api/.env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-auto_search}
+      POSTGRES_USER: ${POSTGRES_USER:-auto}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-auto133}
+    volumes:
+      - bot_postgres_data:/var/lib/postgresql/data
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-auto} -d ${POSTGRES_DB:-auto_search}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - bot_internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  bot-api-migrate:
+    build:
+      context: ..
+      dockerfile: apps/bot_api/Dockerfile
+    container_name: auto-search-bot-api-migrate
+    restart: "no"
+    env_file:
+      - ../apps/bot_api/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+    networks:
+      - bot_internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  bot-api:
+    build:
+      context: ..
+      dockerfile: apps/bot_api/Dockerfile
+    container_name: auto-search-bot-api
+    restart: unless-stopped
+    env_file:
+      - ../apps/bot_api/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bot-api-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8100:8100"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8100/api/v1/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - bot_internal
+      - shared        # подключается к search core через container name auto-search-api
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  tg-bot:
+    build:
+      context: ..
+      dockerfile: apps/bot/Dockerfile
+    container_name: auto-search-tg-bot
+    restart: unless-stopped
+    env_file:
+      - ../apps/bot/.env
+    depends_on:
+      bot-api:
+        condition: service_healthy
+    networks:
+      - bot_internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  worker:
+    build:
+      context: ..
+      dockerfile: apps/worker/Dockerfile
+    container_name: auto-search-worker
+    restart: unless-stopped
+    env_file:
+      - ../apps/worker/.env
+    depends_on:
+      bot-api:
+        condition: service_healthy
+    networks:
+      - bot_internal
+      - shared        # подключается к search core для saved search alerts
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  bot_postgres_data:
+
+networks:
+  bot_internal:
+    driver: bridge
+  shared:
+    name: auto-search-shared
+    external: true    # сеть создаётся auto-search-mvp compose
