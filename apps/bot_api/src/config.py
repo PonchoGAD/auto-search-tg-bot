@@ -68,15 +68,17 @@ class Settings(BaseSettings):
 
     PAYMENT_WEBHOOK_SECRET: Optional[str] = Field(default=None)
 
-    PAYMENT_CLICK_MERCHANT_ID: Optional[str] = Field(default=None)
-    PAYMENT_CLICK_SERVICE_ID: Optional[str] = Field(default=None)
-    PAYMENT_CLICK_SECRET_KEY: Optional[str] = Field(default=None)
-    PAYMENT_CLICK_BASE_URL: str = Field(default="https://my.click.uz/services/pay")
+    PAYMENT_YOOKASSA_SHOP_ID: Optional[str] = Field(default=None)
+    PAYMENT_YOOKASSA_SECRET_KEY: Optional[str] = Field(default=None)
+    PAYMENT_YOOKASSA_BASE_URL: str = Field(default="https://api.yookassa.ru/v3")
+
+    PAYMENT_PLAN_PREMIUM_STARS: int = Field(default=200)
+    PAYMENT_PLAN_PRO_STARS: int = Field(default=400)
+
+    PAYMENT_TELEGRAM_PROVIDER_TOKEN: Optional[str] = Field(default=None)
 
     PAYMENT_STRIPE_SECRET_KEY: Optional[str] = Field(default=None)
     PAYMENT_STRIPE_WEBHOOK_SECRET: Optional[str] = Field(default=None)
-
-    PAYMENT_TELEGRAM_PROVIDER_TOKEN: Optional[str] = Field(default=None)
 
     PAYMENT_STUB_SUCCESS_ENABLED: bool = Field(default=False)
     PAYMENT_PLAN_PREMIUM_PRICE: Decimal = Field(default=Decimal("990.00"))
@@ -108,7 +110,7 @@ class Settings(BaseSettings):
     @field_validator("PAYMENT_PROVIDER")
     @classmethod
     def validate_payment_provider(cls, value: str) -> str:
-        allowed = {"stub", "click", "stripe", "telegram"}
+        allowed = {"stub", "yookassa", "stars", "telegram", "stripe"}
         clean = str(value or "").strip().lower()
 
         if clean not in allowed:
@@ -224,18 +226,15 @@ class Settings(BaseSettings):
             if len(str(self.JWT_SECRET or "")) < 32:
                 issues.append("JWT_SECRET must be at least 32 characters")
 
-            if self.PAYMENT_PROVIDER != "stub" and not self.PAYMENT_WEBHOOK_SECRET:
+            non_stub_providers = {"yookassa", "telegram", "stripe"}
+            if self.PAYMENT_PROVIDER in non_stub_providers and not self.PAYMENT_WEBHOOK_SECRET:
                 issues.append("PAYMENT_WEBHOOK_SECRET is required for real payment provider")
 
-            if self.PAYMENT_PROVIDER == "click":
-                if not self.PAYMENT_CLICK_MERCHANT_ID:
-                    issues.append("PAYMENT_CLICK_MERCHANT_ID is required")
-                if not self.PAYMENT_CLICK_SERVICE_ID:
-                    issues.append("PAYMENT_CLICK_SERVICE_ID is required")
-                if not self.PAYMENT_CLICK_SECRET_KEY:
-                    issues.append("PAYMENT_CLICK_SECRET_KEY is required")
-                if not self.PAYMENT_CLICK_BASE_URL:
-                    issues.append("PAYMENT_CLICK_BASE_URL is required")
+            if self.PAYMENT_PROVIDER == "yookassa":
+                if not self.PAYMENT_YOOKASSA_SHOP_ID:
+                    issues.append("PAYMENT_YOOKASSA_SHOP_ID is required")
+                if not self.PAYMENT_YOOKASSA_SECRET_KEY:
+                    issues.append("PAYMENT_YOOKASSA_SECRET_KEY is required")
 
             if self.PAYMENT_PROVIDER == "stripe":
                 if not self.PAYMENT_STRIPE_SECRET_KEY:

@@ -334,7 +334,7 @@ class Payment(Base, TimestampMixin):
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_payments_amount_positive"),
         CheckConstraint(
-            "provider IN ('stub', 'click', 'stripe', 'telegram')",
+            "provider IN ('stub', 'yookassa', 'stars', 'telegram', 'stripe')",
             name="ck_payments_provider_valid",
         ),
         CheckConstraint(

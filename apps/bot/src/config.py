@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     THROTTLE_SEARCH_SEC: float = Field(default=1.0)
     THROTTLE_CALLBACK_SEC: float = Field(default=0.3)
 
+    PAYMENT_PROVIDER: str = Field(default="stub")
+    PAYMENT_TELEGRAM_PROVIDER_TOKEN: Optional[str] = Field(default=None)
+    PAYMENT_WEBHOOK_SECRET: Optional[str] = Field(default=None)
+    PAYMENT_PLAN_DURATION_DAYS: int = Field(default=30)
+
     ADMIN_TELEGRAM_IDS_RAW: str = Field(default="")
 
     @property

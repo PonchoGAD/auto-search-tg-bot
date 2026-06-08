@@ -28,9 +28,10 @@ class SubscriptionStatus(str, enum.Enum):
 
 class PaymentProvider(str, enum.Enum):
     STUB = "stub"
-    CLICK = "click"
-    STRIPE = "stripe"
+    YOOKASSA = "yookassa"
+    STARS = "stars"
     TELEGRAM = "telegram"
+    STRIPE = "stripe"
 
 
 class PaymentStatus(str, enum.Enum):

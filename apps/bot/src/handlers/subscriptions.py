@@ -141,19 +141,22 @@ def _provider_hint(provider: str, payment_url: str | None) -> str:
     if provider == "stub":
         return (
             "Режим оплаты: <code>stub</code>\n"
-            "Это тестовый режим. Если включен PAYMENT_STUB_SUCCESS_ENABLED, подписка активируется автоматически."
+            "Это тестовый режим. Если включён PAYMENT_STUB_SUCCESS_ENABLED, подписка активируется автоматически."
         )
 
-    if provider == "click":
+    if provider == "yookassa":
         if payment_url:
-            return "Режим оплаты: <code>Click</code>\nПерейдите по ссылке оплаты и после оплаты нажмите «Проверить оплату»."
-        return "Режим оплаты: <code>Click</code>\nСсылка не сформирована. Проверь CLICK настройки в .env."
+            return "Режим оплаты: <code>ЮKassa</code>\nПерейдите по ссылке и оплатите картой РФ, СБП или ЮMoney."
+        return "Режим оплаты: <code>ЮKassa</code>\nСсылка не сформирована. Проверьте YOOKASSA настройки в .env."
+
+    if provider == "stars":
+        return "Режим оплаты: <code>Telegram Stars ⭐</code>\nОплата звёздами Telegram — без карты, мгновенно."
 
     if provider == "telegram":
-        return "Режим оплаты: <code>Telegram Payments</code>\nПроверьте TELEGRAM_PROVIDER_TOKEN и платежную интеграцию."
+        return "Режим оплаты: <code>Telegram Payments</code>\nПроверьте TELEGRAM_PROVIDER_TOKEN и платёжную интеграцию."
 
     if provider == "stripe":
-        return "Режим оплаты: <code>Stripe</code>\nStripe зарезервирован, но полноценная checkout-ссылка еще должна быть подключена."
+        return "Режим оплаты: <code>Stripe</code>\nStripe зарезервирован."
 
     return f"Режим оплаты: <code>{provider}</code>"
 
@@ -302,16 +305,55 @@ async def subscription_callbacks(callback: CallbackQuery) -> None:
         external_payment_id = str(payment_data.get("external_payment_id") or "").strip()
         provider = str(payment_data.get("provider") or "stub").lower()
 
+        if provider == "stars" and callback.message:
+            # Telegram Stars: currency=XTR, provider_token="" (native Telegram)
+            stars_amount = int(Decimal(str(payment_data.get("amount") or 0)))
+            if stars_amount <= 0:
+                await callback.answer("Ошибка: некорректное количество звёзд.", show_alert=True)
+                return
+            try:
+                await callback.message.bot.send_invoice(
+                    chat_id=callback.from_user.id,
+                    title=f"{PLAN_TITLES.get(plan, plan)} подписка",
+                    description=f"Тариф {PLAN_TITLES.get(plan, plan)} на {getattr(settings, 'PAYMENT_PLAN_DURATION_DAYS', 30)} дней.",
+                    payload=external_payment_id,
+                    provider_token="",
+                    currency="XTR",
+                    prices=[LabeledPrice(label=PLAN_TITLES.get(plan, plan), amount=stars_amount)],
+                    start_parameter=f"sub_{plan}_{callback.from_user.id}",
+                    need_name=False,
+                    need_phone_number=False,
+                    need_email=False,
+                    need_shipping_address=False,
+                )
+            except Exception as exc:
+                logger.exception("stars_invoice_send_failed error=%s", repr(exc))
+                await callback.answer(
+                    _api_error_message(exc, "Не удалось отправить счёт Telegram Stars"),
+                    show_alert=True,
+                )
+                return
+
+            await callback.message.answer(
+                f"⭐ Счёт на {stars_amount} Stars отправлен. Оплатите прямо в Telegram.",
+                reply_markup=payment_keyboard(
+                    payment_url=None,
+                    payment_id=int(payment_data.get("id") or 0),
+                ),
+            )
+            await callback.answer()
+            return
+
         if provider == "telegram" and callback.message:
             try:
                 await callback.message.bot.send_invoice(
                     chat_id=callback.from_user.id,
                     title=f"{PLAN_TITLES.get(plan, plan)} подписка",
-                    description=f"Оплата тарифа {PLAN_TITLES.get(plan, plan)} на {settings.PAYMENT_PLAN_DURATION_DAYS} дней.",
+                    description=f"Оплата тарифа {PLAN_TITLES.get(plan, plan)} на {getattr(settings, 'PAYMENT_PLAN_DURATION_DAYS', 30)} дней.",
                     payload=external_payment_id,
-                    provider_token=str(settings.PAYMENT_TELEGRAM_PROVIDER_TOKEN or ""),
+                    provider_token=str(getattr(settings, "PAYMENT_TELEGRAM_PROVIDER_TOKEN", "") or ""),
                     currency=str(payment_data.get("currency") or "RUB").upper(),
-                    prices=[LabeledPrice(label=f"{PLAN_TITLES.get(plan, plan)}", amount=int(Decimal(str(payment_data.get("amount") or 0)) * 100))],
+                    prices=[LabeledPrice(label=PLAN_TITLES.get(plan, plan), amount=int(Decimal(str(payment_data.get("amount") or 0)) * 100))],
                     start_parameter=f"sub_{plan}_{callback.from_user.id}",
                     need_name=False,
                     need_phone_number=False,
@@ -321,14 +363,14 @@ async def subscription_callbacks(callback: CallbackQuery) -> None:
             except Exception as exc:
                 logger.exception("telegram_invoice_send_failed error=%s", repr(exc))
                 await callback.answer(
-                    _api_error_message(exc, "Не удалось отправить счет по Telegram Payments"),
+                    _api_error_message(exc, "Не удалось отправить счёт по Telegram Payments"),
                     show_alert=True,
                 )
                 return
 
             if callback.message:
                 await callback.message.answer(
-                    "Счет Telegram Payments отправлен. После оплаты вы получите уведомление.",
+                    "Счёт Telegram Payments отправлен. После оплаты вы получите уведомление.",
                     reply_markup=payment_keyboard(
                         payment_url=None,
                         payment_id=int(payment_data.get("id") or 0),
@@ -388,12 +430,15 @@ async def subscription_callbacks(callback: CallbackQuery) -> None:
 
 @router.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery) -> None:
-    if settings.PAYMENT_PROVIDER != "telegram":
-        await query.answer(ok=False, error_message="Telegram Payments не настроены.")
+    configured_provider = str(getattr(settings, "PAYMENT_PROVIDER", "stub") or "stub").lower()
+    is_stars = str(query.currency or "").upper() == "XTR"
+
+    if not is_stars and configured_provider not in {"telegram"}:
+        await query.answer(ok=False, error_message="Платёжный провайдер не настроен.")
         return
 
     if not query.invoice_payload:
-        await query.answer(ok=False, error_message="Не найден payload счета.")
+        await query.answer(ok=False, error_message="Не найден payload счёта.")
         return
 
     await query.answer(ok=True)
@@ -401,12 +446,21 @@ async def pre_checkout(query: PreCheckoutQuery) -> None:
 
 @router.message(lambda message: message.successful_payment is not None)
 async def successful_payment(message: Message) -> None:
-    if settings.PAYMENT_PROVIDER != "telegram":
+    if not message.from_user or not message.successful_payment:
+        return
+
+    currency = str(message.successful_payment.currency or "").upper()
+    is_stars = currency == "XTR"
+    actual_provider = "stars" if is_stars else "telegram"
+
+    # Stars work everywhere; Telegram Payments require specific provider setting
+    configured_provider = str(getattr(settings, "PAYMENT_PROVIDER", "stub") or "stub").lower()
+    if not is_stars and configured_provider != "telegram":
         return
 
     payment_payload = str(message.successful_payment.invoice_payload or "").strip()
-    if not payment_payload or not message.from_user:
-        logger.warning("telegram_payment_callback_missing_payload message_id=%s", getattr(message, "message_id", None))
+    if not payment_payload:
+        logger.warning("successful_payment_missing_payload provider=%s", actual_provider)
         return
 
     transaction_id = str(
@@ -415,12 +469,26 @@ async def successful_payment(message: Message) -> None:
         or payment_payload
     ).strip()
 
-    payload = {
-        "provider": "telegram",
+    # Stars: amount is in Stars (integer), no division needed
+    # Telegram Payments: amount is in minor units (kopeks for RUB), divide by 100
+    raw_amount = int(message.successful_payment.total_amount or 0)
+    if is_stars:
+        amount = Decimal(raw_amount)
+    else:
+        amount = Decimal(raw_amount) / 100
+
+    signature = str(
+        getattr(settings, "PAYMENT_TELEGRAM_PROVIDER_TOKEN", "")
+        or getattr(settings, "PAYMENT_WEBHOOK_SECRET", "")
+        or ""
+    )
+
+    webhook_payload = {
+        "provider": actual_provider,
         "external_payment_id": payment_payload,
         "status": "succeeded",
-        "amount": Decimal(message.successful_payment.total_amount) / 100,
-        "currency": str(message.successful_payment.currency or "RUB").upper(),
+        "amount": str(amount),
+        "currency": currency,
         "payload": {
             "invoice_payload": payment_payload,
             "telegram_user_id": message.from_user.id,
@@ -431,20 +499,23 @@ async def successful_payment(message: Message) -> None:
         },
         "transaction_id": transaction_id,
         "event_id": transaction_id,
-        "signature": str(settings.PAYMENT_TELEGRAM_PROVIDER_TOKEN or settings.PAYMENT_WEBHOOK_SECRET or ""),
+        "signature": signature,
     }
 
     try:
         async with httpx.AsyncClient(timeout=settings.BOT_API_TIMEOUT_SEC) as client:
             response = await client.post(
                 f"{settings.bot_api_url}/payments/webhook",
-                json=payload,
+                json=webhook_payload,
                 headers=bot_api_headers(),
             )
             response.raise_for_status()
     except Exception as exc:
-        logger.exception("telegram_payment_webhook_post_failed error=%s", repr(exc))
-        await message.answer("Произошла ошибка при подтверждении оплате. Попробуйте позже.")
+        logger.exception("successful_payment_webhook_failed provider=%s error=%s", actual_provider, repr(exc))
+        await message.answer("Произошла ошибка при подтверждении оплаты. Попробуйте позже или обратитесь в поддержку.")
         return
 
-    await message.answer("Платеж подтвержден. Спасибо! Ваша подписка будет активирована.")
+    if is_stars:
+        await message.answer("⭐ Оплата Stars подтверждена! Ваша подписка активирована.")
+    else:
+        await message.answer("Оплата подтверждена. Спасибо! Ваша подписка активирована.")

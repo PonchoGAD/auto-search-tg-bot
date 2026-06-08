@@ -5,13 +5,13 @@ import hmac
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
-from urllib.parse import urlencode
 from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from src.clients.yookassa import YooKassaClient
 from src.config import settings
 from src.db.enums import PaymentProvider, PaymentStatus, SubscriptionPlan, SubscriptionStatus
 from src.db.models import Payment, Subscription, User
@@ -170,13 +170,21 @@ class PaymentsRepository:
         if plan not in PAID_PLANS:
             raise ValueError(f"invalid paid subscription plan: {plan}")
 
-        amount = Decimal(str(payload.amount))
-        if amount <= 0:
-            raise ValueError("payment amount must be positive")
-
-        currency = str(payload.currency or settings.DEFAULT_CURRENCY).upper().strip()
-        if not currency:
-            raise ValueError("currency is required")
+        # Stars: override amount/currency from config, bot just passes a placeholder
+        if provider == PaymentProvider.STARS.value:
+            stars_map = {
+                SubscriptionPlan.PREMIUM.value: settings.PAYMENT_PLAN_PREMIUM_STARS,
+                SubscriptionPlan.PRO.value: settings.PAYMENT_PLAN_PRO_STARS,
+            }
+            amount = Decimal(str(stars_map.get(plan, settings.PAYMENT_PLAN_PREMIUM_STARS)))
+            currency = "XTR"
+        else:
+            amount = Decimal(str(payload.amount))
+            if amount <= 0:
+                raise ValueError("payment amount must be positive")
+            currency = str(payload.currency or settings.DEFAULT_CURRENCY).upper().strip()
+            if not currency:
+                raise ValueError("currency is required")
 
         idempotency_key = str(payload.idempotency_key or "").strip() or None
 
@@ -195,7 +203,7 @@ class PaymentsRepository:
         fail_url = payload.fail_url or settings.payment_fail_url
         return_url = payload.return_url or settings.PAYMENT_RETURN_URL
 
-        payment_url, invoice_url = self._build_provider_invoice(
+        payment_url, invoice_url, yookassa_id = self._build_provider_invoice(
             provider=provider,
             external_payment_id=external_payment_id,
             amount=amount,
@@ -206,6 +214,10 @@ class PaymentsRepository:
             success_url=success_url,
             fail_url=fail_url,
         )
+
+        # YooKassa returns its own UUID — use it as external_payment_id for webhook lookup
+        if yookassa_id:
+            external_payment_id = yookassa_id
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -535,10 +547,14 @@ class PaymentsRepository:
         payment: Payment,
         payload: PaymentWebhookRequest,
     ) -> None:
+        # YooKassa webhook is authenticated via Basic Auth at the HTTP layer
+        if payment.provider == PaymentProvider.YOOKASSA.value:
+            return
+
         secret = self._provider_secret(payment.provider)
 
         if not secret:
-            if settings.PAYMENT_PROVIDER != PaymentProvider.STUB.value:
+            if payment.provider != PaymentProvider.STUB.value:
                 raise PermissionError("payment provider secret is not configured")
             return
 
@@ -573,8 +589,12 @@ class PaymentsRepository:
         )
 
     def _provider_secret(self, provider: str) -> Optional[str]:
-        if provider == PaymentProvider.CLICK.value:
-            return settings.PAYMENT_CLICK_SECRET_KEY or settings.PAYMENT_WEBHOOK_SECRET
+        if provider == PaymentProvider.YOOKASSA.value:
+            # YooKassa uses Basic Auth verified at HTTP layer — no HMAC secret needed here
+            return None
+
+        if provider == PaymentProvider.STARS.value:
+            return settings.PAYMENT_WEBHOOK_SECRET
 
         if provider == PaymentProvider.STRIPE.value:
             return settings.PAYMENT_STRIPE_WEBHOOK_SECRET or settings.PAYMENT_WEBHOOK_SECRET
@@ -598,51 +618,71 @@ class PaymentsRepository:
         return_url: str | None,
         success_url: str | None,
         fail_url: str | None,
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Returns (payment_url, invoice_url, yookassa_payment_id).
+        yookassa_payment_id is set only for YooKassa — caller uses it to override external_payment_id.
+        """
         if provider == PaymentProvider.STUB.value:
-            return None, None
+            return None, None, None
 
-        if provider == PaymentProvider.CLICK.value:
-            invoice_url = self._build_click_invoice_url(
-                external_payment_id=external_payment_id,
+        if provider == PaymentProvider.STARS.value:
+            # Stars have no external URL — payment happens inline in Telegram
+            return None, None, None
+
+        if provider == PaymentProvider.YOOKASSA.value:
+            return self._build_yookassa_invoice(
+                internal_idempotency_key=external_payment_id,
                 amount=amount,
+                currency=currency,
+                description=description,
                 return_url=return_url or success_url,
+                plan=plan,
             )
-            return invoice_url, invoice_url
-
-        if provider == PaymentProvider.STRIPE.value:
-            return None, None
 
         if provider == PaymentProvider.TELEGRAM.value:
-            return None, None
+            return None, None, None
 
-        return None, None
+        if provider == PaymentProvider.STRIPE.value:
+            return None, None, None
 
-    def _build_click_invoice_url(
+        return None, None, None
+
+    def _build_yookassa_invoice(
         self,
-        external_payment_id: str,
+        internal_idempotency_key: str,
         amount: Decimal,
+        currency: str,
+        description: str | None,
         return_url: str | None,
-    ) -> Optional[str]:
-        merchant_id = settings.PAYMENT_CLICK_MERCHANT_ID
-        service_id = settings.PAYMENT_CLICK_SERVICE_ID
+        plan: str,
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        shop_id = settings.PAYMENT_YOOKASSA_SHOP_ID
+        secret_key = settings.PAYMENT_YOOKASSA_SECRET_KEY
 
-        if not merchant_id or not service_id:
-            return None
+        if not shop_id or not secret_key:
+            return None, None, None
 
-        base = getattr(settings, "PAYMENT_CLICK_BASE_URL", None) or "https://my.click.uz/services/pay"
+        redirect_url = return_url or settings.PAYMENT_RETURN_URL or "https://t.me/"
 
-        params = {
-            "service_id": service_id,
-            "merchant_id": merchant_id,
-            "amount": str(amount),
-            "transaction_param": external_payment_id,
-        }
+        client = YooKassaClient(shop_id=shop_id, secret_key=secret_key)
 
-        if return_url:
-            params["return_url"] = return_url
+        try:
+            result = client.create_payment(
+                amount=amount,
+                currency=currency,
+                description=description or f"Auto-search {plan} subscription",
+                idempotency_key=internal_idempotency_key,
+                return_url=redirect_url,
+                metadata={"plan": plan, "internal_id": internal_idempotency_key},
+            )
+        except Exception:
+            return None, None, None
 
-        return f"{base}?{urlencode(params)}"
+        yookassa_payment_id: Optional[str] = result.get("id")
+        confirmation_url: Optional[str] = (result.get("confirmation") or {}).get("confirmation_url")
+
+        return confirmation_url, confirmation_url, yookassa_payment_id
 
     def _append_event(self, payload: dict | None, event: dict) -> dict:
         current_payload = dict(payload or {})

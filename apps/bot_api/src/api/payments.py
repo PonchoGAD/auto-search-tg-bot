@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from src.clients.yookassa import YooKassaClient
 from src.config import settings
 from src.db.session import get_db
 from src.dependencies.auth import verify_internal_api_key
@@ -131,6 +136,106 @@ def get_payment(
 ) -> PaymentResponse:
     repo = PaymentsRepository(db)
     payment = repo.get_by_id(payment_id)
+
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment not found",
+        )
+
+    return PaymentResponse.model_validate(payment)
+
+
+@router.post("/webhook/yookassa", response_model=PaymentResponse)
+async def yookassa_webhook(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> PaymentResponse:
+    """
+    Dedicated YooKassa webhook endpoint.
+    YooKassa sends Basic Auth (shop_id:secret_key) instead of HMAC signature.
+    Event format: {"type": "notification", "event": "payment.succeeded", "object": {...}}
+    """
+    shop_id = settings.PAYMENT_YOOKASSA_SHOP_ID
+    secret_key = settings.PAYMENT_YOOKASSA_SECRET_KEY
+
+    if shop_id and secret_key:
+        auth_header = request.headers.get("Authorization", "")
+        client = YooKassaClient(shop_id=shop_id, secret_key=secret_key)
+        if not client.verify_basic_auth(auth_header):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid YooKassa Basic Auth",
+            )
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON body",
+        )
+
+    event: str = body.get("event", "")
+    obj: dict = body.get("object") or {}
+
+    _YOOKASSA_STATUS_MAP = {
+        "payment.succeeded": "succeeded",
+        "payment.canceled": "canceled",
+        "refund.succeeded": "refunded",
+    }
+
+    our_status = _YOOKASSA_STATUS_MAP.get(event)
+    if not our_status:
+        # Unknown event type — acknowledge to stop retries, ignore silently
+        return JSONResponse(content={"ok": True, "event": event, "handled": False})
+
+    if not obj:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty YooKassa event object",
+        )
+
+    yookassa_payment_id: str = obj.get("id", "")
+    if not yookassa_payment_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing payment id in YooKassa event",
+        )
+
+    amount_obj: dict = obj.get("amount") or {}
+    amount: Optional[Decimal] = Decimal(amount_obj["value"]) if amount_obj.get("value") else None
+    currency: Optional[str] = amount_obj.get("currency")
+
+    paid_at_raw: Optional[str] = obj.get("captured_at") or obj.get("created_at")
+
+    webhook_payload = PaymentWebhookRequest(
+        provider="yookassa",
+        external_payment_id=yookassa_payment_id,
+        status=our_status,
+        amount=amount,
+        currency=currency,
+        event_type=event,
+        event_id=f"yk-{yookassa_payment_id}-{event}",
+        paid_at=paid_at_raw,
+        raw_payload=body,
+        payload=obj,
+    )
+
+    repo = PaymentsRepository(db)
+
+    try:
+        payment = repo.apply_webhook(webhook_payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
 
     if not payment:
         raise HTTPException(
